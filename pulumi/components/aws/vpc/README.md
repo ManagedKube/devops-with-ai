@@ -5,12 +5,13 @@ A reusable Pulumi component for creating AWS VPC infrastructure with public and 
 ## Features
 
 - **VPC**: Creates a VPC with configurable CIDR block and DNS support
-- **Public Subnets**: 3 public subnets across availability zones with auto-assign public IP
-- **Private Subnets**: 3 private subnets across availability zones
+- **Public Subnets**: Configurable number of public subnets (2-3 typical) across availability zones with auto-assign public IP
+- **Private Subnets**: Configurable number of private subnets (2-3 typical) across availability zones
 - **Internet Gateway**: For public subnet internet connectivity
 - **Route Tables**: Properly configured route tables for public and private subnets
 - **Default Security Group**: Allows all inbound and outbound traffic (configurable)
 - **Optional NAT Gateways**: One NAT Gateway per availability zone for private subnet internet access
+- **Flexible Subnet Count**: Supports 2 or 3 subnets (or more) - simply provide the desired number of CIDR blocks
 
 ## Usage
 
@@ -85,15 +86,42 @@ public_subnet_ids = vpc.public_subnet_ids
 private_subnet_ids = vpc.private_subnet_ids
 ```
 
+### Example with 2 Subnets
+
+You can create a VPC with just 2 subnets by providing 2 CIDR blocks:
+
+```yaml
+resources:
+  my-vpc-two-subnets:
+    type: vpc:index:Vpc
+    properties:
+      vpcCidr: "10.0.0.0/16"
+      publicSubnetCidrs:
+        - "10.0.1.0/24"
+        - "10.0.2.0/24"
+      privateSubnetCidrs:
+        - "10.0.11.0/24"
+        - "10.0.12.0/24"
+      availabilityZones:
+        - "us-east-1a"
+        - "us-east-1b"
+      enableNatGateway: false
+      vpcName: "my-two-subnet-vpc"
+      tagsAdditional:
+        Environment: "development"
+```
+
 ## Parameters
 
 ### Required Parameters
 
 - **vpcCidr** (string): CIDR block for the VPC (e.g., "10.0.0.0/16")
-- **publicSubnetCidrs** (list[string]): List of 3 CIDR blocks for public subnets
-- **privateSubnetCidrs** (list[string]): List of 3 CIDR blocks for private subnets
-- **availabilityZones** (list[string]): List of 3 availability zones to use
+- **publicSubnetCidrs** (list[string]): List of CIDR blocks for public subnets (e.g., 2-3 subnets)
+- **privateSubnetCidrs** (list[string]): List of CIDR blocks for private subnets (e.g., 2-3 subnets)
+- **availabilityZones** (list[string]): List of availability zones to use (must match the number of subnets)
 - **tagsAdditional** (dict): Additional tags to apply to all resources
+
+**Note**: The number of subnets is determined by the length of the `publicSubnetCidrs` list. Provide 2 CIDR blocks for 2 subnets, 3 for 3 subnets, etc.
 
 ### Optional Parameters
 

@@ -3,8 +3,8 @@ VPC component for AWS infrastructure.
 
 This module creates a complete VPC infrastructure including:
 - VPC with configurable CIDR block
-- 3 public subnets in different availability zones
-- 3 private subnets in different availability zones
+- Public subnets in different availability zones (configurable number)
+- Private subnets in different availability zones (configurable number)
 - Internet Gateway for public subnet internet access
 - Route tables with appropriate routes
 - Default security group allowing all traffic
@@ -21,9 +21,9 @@ class VpcArgs(TypedDict, total=False):
 
     Required fields:
         vpcCidr: CIDR block for the VPC (e.g., "10.0.0.0/16").
-        publicSubnetCidrs: List of 3 CIDR blocks for public subnets.
-        privateSubnetCidrs: List of 3 CIDR blocks for private subnets.
-        availabilityZones: List of 3 availability zones to use.
+        publicSubnetCidrs: List of CIDR blocks for public subnets (e.g., 2-3 subnets).
+        privateSubnetCidrs: List of CIDR blocks for private subnets (e.g., 2-3 subnets).
+        availabilityZones: List of availability zones to use (must match subnet count).
         tagsAdditional: Additional tags to apply to all resources.
 
     Optional fields:
@@ -46,8 +46,8 @@ class Vpc(pulumi.ComponentResource):
 
     This component creates:
         - A VPC with the specified CIDR block
-        - 3 public subnets across availability zones
-        - 3 private subnets across availability zones
+        - Public subnets across availability zones (configurable number)
+        - Private subnets across availability zones (configurable number)
         - An Internet Gateway for public internet access
         - Route tables with appropriate routes
         - A default security group allowing all traffic
@@ -93,6 +93,24 @@ class Vpc(pulumi.ComponentResource):
         enable_nat_gateway = pick(args, "enable_nat_gateway", "enableNatGateway", False)
         vpc_name = pick(args, "vpc_name", "vpcName", name)
 
+        # Determine the number of subnets dynamically based on the input lists
+        # For static inputs (from YAML), we can determine this immediately
+        # For dynamic inputs (from other Pulumi resources), we default to the input length
+        def determine_subnet_count(cidrs):
+            """Determine subnet count from CIDR list."""
+            if isinstance(cidrs, list):
+                return len(cidrs)
+            return 3  # fallback default
+        
+        # Try to get the count directly if inputs are static (from YAML)
+        try:
+            if isinstance(public_subnet_cidrs, list):
+                num_subnets = len(public_subnet_cidrs)
+            else:
+                num_subnets = 3  # default
+        except:
+            num_subnets = 3  # default fallback
+
         # Create VPC
         vpc_tags = {
             "Name": vpc_name,
@@ -123,7 +141,7 @@ class Vpc(pulumi.ComponentResource):
 
         # Create public subnets
         public_subnets = []
-        for i in range(3):
+        for i in range(num_subnets):
             subnet_tags = {
                 "Name": f"{vpc_name}-public-subnet-{i+1}",
                 "Type": "public",
@@ -192,7 +210,7 @@ class Vpc(pulumi.ComponentResource):
 
         # Create private subnets
         private_subnets = []
-        for i in range(3):
+        for i in range(num_subnets):
             subnet_tags = {
                 "Name": f"{vpc_name}-private-subnet-{i+1}",
                 "Type": "private",

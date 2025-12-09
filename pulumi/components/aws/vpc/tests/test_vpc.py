@@ -391,6 +391,53 @@ class TestVpc(unittest.TestCase):
         self.assertIsNotNone(component.nat_gateway_ids)
         self.assertIsNotNone(component.default_security_group_id)
 
+    @pulumi.runtime.test
+    def test_with_two_subnets(self):
+        """
+        Test VPC creation with only 2 subnets instead of 3.
+        """
+        import sys
+        import os
+
+        sys.path.insert(
+            0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+        from vpc import Vpc
+
+        args = {
+            "vpcCidr": "10.6.0.0/16",
+            "publicSubnetCidrs": [
+                "10.6.1.0/24",
+                "10.6.2.0/24",
+            ],
+            "privateSubnetCidrs": [
+                "10.6.11.0/24",
+                "10.6.12.0/24",
+            ],
+            "availabilityZones": [
+                "us-west-2a",
+                "us-west-2b",
+            ],
+            "tagsAdditional": {
+                "Environment": "test",
+            },
+        }
+
+        component = Vpc("test-two-subnets", args)
+
+        def check_outputs(outputs):
+            vpc_id, public_subnets, private_subnets = outputs
+            self.assertIsNotNone(vpc_id)
+            # Should have exactly 2 subnets
+            self.assertEqual(len(public_subnets), 2)
+            self.assertEqual(len(private_subnets), 2)
+
+        return pulumi.Output.all(
+            component.vpc_id,
+            component.public_subnet_ids,
+            component.private_subnet_ids,
+        ).apply(lambda args: check_outputs(args))
+
 
 if __name__ == "__main__":
     unittest.main()
