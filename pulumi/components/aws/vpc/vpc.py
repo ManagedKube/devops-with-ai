@@ -165,10 +165,10 @@ class Vpc(pulumi.ComponentResource):
                 f"{name}-public-subnet-{i+1}",
                 vpc_id=vpc.id,
                 cidr_block=Output.from_input(public_subnet_cidrs).apply(
-                    lambda cidrs: get_cidr(cidrs, i)
+                    lambda cidrs, idx=i: get_cidr(cidrs, idx)
                 ),
                 availability_zone=Output.from_input(availability_zones).apply(
-                    lambda zones: get_az(zones, i)
+                    lambda zones, idx=i: get_az(zones, idx)
                 ),
                 map_public_ip_on_launch=True,
                 tags=subnet_tags,
@@ -220,10 +220,10 @@ class Vpc(pulumi.ComponentResource):
                 f"{name}-private-subnet-{i+1}",
                 vpc_id=vpc.id,
                 cidr_block=Output.from_input(private_subnet_cidrs).apply(
-                    lambda cidrs: get_cidr(cidrs, i)
+                    lambda cidrs, idx=i: get_cidr(cidrs, idx)
                 ),
                 availability_zone=Output.from_input(availability_zones).apply(
-                    lambda zones: get_az(zones, i)
+                    lambda zones, idx=i: get_az(zones, idx)
                 ),
                 map_public_ip_on_launch=False,
                 tags=subnet_tags,
