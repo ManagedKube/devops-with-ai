@@ -1,0 +1,35 @@
+name: github-oidc
+description: GitHub Actions OIDC Provider for AWS
+runtime: yaml
+packages:
+  githuboidc: https://github.com/ManagedKube/devops-with-ai.git/pulumi/components/aws/githuboidc@0.0.1
+resources:
+  aws-provider:
+    # Version can be found here: https://github.com/pulumi/pulumi-aws
+    type: pulumi:providers:aws
+    defaultProvider: true
+    options:
+      version: 7.9.1
+  githuboidc:
+    type: githuboidc:index:Githuboidc
+    properties:
+      roleName: staging-github-actions-role
+      repositories:
+        - "ManagedKube/devops-with-ai"
+      # Allow all branches as specified in the issue
+      branches:
+        - "*"
+      # GitHub OIDC provider certificate thumbprint
+      thumbprint: "2b18947a6a9fc7764fd8b5fb18a863b0c6dac24f"
+      tagsAdditional:
+        github_repository: infrastructure
+        github_repository_path: "pulumi/environments/aws/staging/36-github-oidc"
+        environment: staging
+      # Attach AdministratorAccess as specified in the issue
+      policyArns:
+        - "arn:aws:iam::aws:policy/AdministratorAccess"
+outputs:
+  oidc_provider_arn: ${githuboidc.oidcProviderArn}
+  role_arn: ${githuboidc.roleArn}
+  role_name: ${githuboidc.roleName}
+
