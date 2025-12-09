@@ -1,0 +1,43 @@
+name: vpc
+description: VPC infrastructure for staging environment
+runtime: yaml
+packages:
+  vpc: ../../../../components/aws/vpc@0.0.0
+resources:
+  aws-provider:
+    # Version can be found here: https://github.com/pulumi/pulumi-aws
+    type: pulumi:providers:aws
+    defaultProvider: true
+    options:
+      version: 7.9.1
+  staging-vpc:
+    type: vpc:index:Vpc
+    properties:
+      vpcCidr: "10.0.0.0/16"
+      publicSubnetCidrs:
+        - "10.0.1.0/24"
+        - "10.0.2.0/24"
+        - "10.0.3.0/24"
+      privateSubnetCidrs:
+        - "10.0.11.0/24"
+        - "10.0.12.0/24"
+        - "10.0.13.0/24"
+      availabilityZones:
+        - "us-east-1a"
+        - "us-east-1b"
+        - "us-east-1c"
+      enableNatGateway: false
+      vpcName: "staging-vpc"
+      tagsAdditional:
+        environment: staging
+        created_by: pulumi
+        github_repository: devops-with-ai
+        github_repository_path: "pulumi/environments/aws/staging/40-vpc"
+outputs:
+  vpc_id: ${staging-vpc.vpcId}
+  vpc_arn: ${staging-vpc.vpcArn}
+  public_subnet_ids: ${staging-vpc.publicSubnetIds}
+  private_subnet_ids: ${staging-vpc.privateSubnetIds}
+  internet_gateway_id: ${staging-vpc.internetGatewayId}
+  nat_gateway_ids: ${staging-vpc.natGatewayIds}
+  default_security_group_id: ${staging-vpc.defaultSecurityGroupId}
