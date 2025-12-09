@@ -139,6 +139,19 @@ class Vpc(pulumi.ComponentResource):
             opts=ResourceOptions(parent=self),
         )
 
+        # Helper functions for extracting values from lists
+        def get_az(zones, idx):
+            """Extract availability zone at index from list."""
+            if isinstance(zones, list):
+                return zones[idx] if idx < len(zones) else zones[0]
+            return zones
+
+        def get_cidr(cidrs, idx):
+            """Extract CIDR block at index from list."""
+            if isinstance(cidrs, list):
+                return cidrs[idx] if idx < len(cidrs) else cidrs[0]
+            return cidrs
+
         # Create public subnets
         public_subnets = []
         for i in range(num_subnets):
@@ -147,20 +160,6 @@ class Vpc(pulumi.ComponentResource):
                 "Type": "public",
                 **tags_additional,
             }
-
-            # Get the availability zone from the list
-            def get_az(zones, idx):
-                """Extract availability zone at index from list."""
-                if isinstance(zones, list):
-                    return zones[idx] if idx < len(zones) else zones[0]
-                return zones
-
-            # Get CIDR block from the list
-            def get_cidr(cidrs, idx):
-                """Extract CIDR block at index from list."""
-                if isinstance(cidrs, list):
-                    return cidrs[idx] if idx < len(cidrs) else cidrs[0]
-                return cidrs
 
             subnet = ec2.Subnet(
                 f"{name}-public-subnet-{i+1}",
