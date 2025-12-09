@@ -1,0 +1,211 @@
+name: Pulumi - prod
+on:
+  push:
+    # only run when files in this path changes
+    paths:
+      - "pulumi/environments/aws/prod/**/*.yaml"
+      - "!pulumi/environments/aws/prod/**/sdk/**"
+    branches:
+      - main
+  pull_request:
+    # only run when files in this path changes
+    paths:
+      - "pulumi/environments/aws/prod/**/*.yaml"
+      - "!pulumi/environments/aws/prod/**/sdk/**"
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECS_CLUSTER: ${{ vars.PROD_ECS_CLUSTER }}
+  PULUMI_CONFIG_PASSPHRASE: "" # ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  DEPLOY_ENVIRONMENT: prod
+jobs:
+  ## This generates a matrix of changed directory to run Terraform on
+  generate_matrix:
+    runs-on: ubuntu-latest
+    env:
+      # The path that you want to construct the matrix on.  Only files in this
+      # path that has changed will be included in.
+      PATH_TO_CHECK: pulumi/environments/aws/prod
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: get parent directory and set matrix
+        id: set-matrix
+        run: |
+          # A list of files that changed
+          git diff --name-only HEAD^ HEAD $PATH_TO_CHECK > files1.txt
+          # Output a list of parent folder stripping out the file name
+          # leaving only the parent dir name
+          while IFS= read -r file
+          do
+            parent_dir=$(dirname -- "$file")
+
+            echo "xx parent_dir: $parent_dir"
+            echo "xx file: $file"
+
+            if [[ "$parent_dir" != *sdk* ]] &&[[ "$parent_dir" != "pulumi/environments/aws/${{ env.DEPLOY_ENVIRONMENT }}/don_not_include_dir" ]] && [[ "$parent_dir" != "pulumi/environments/aws/${{ env.DEPLOY_ENVIRONMENT }}/don_not_include_dir" ]]; then
+              echo "aa: $parent_dir"
+              echo $parent_dir >> file2.txt
+            fi
+
+
+          done < files1.txt
+          echo "## All changed directories"
+          cat file2.txt
+          # There can be duplicates in the parent dir name if multiple
+          # files changed in that parent dir.  This is to output a list
+          # that is unqiue so that we don't run the plan on the same
+          # folder multiple times.
+          cat file2.txt | uniq > file3.txt
+          echo "## Unique list of changed dirs only"
+          cat file3.txt
+          echo "##"
+          # Set the parent dir into the Github Actions json matrix
+          # https://docs.github.com/en/actions/reference/context-and-expression-syntax-for-github-actions#fromjson
+          tf_config=''
+          while IFS= read -r file
+          do
+            echo "file = $file"
+            # parent_dir=$(dirname -- "$file")
+            # echo "parent_dir = $parent_dir"
+
+            if [[ -z $tf_config ]]; then
+              tf_config="{\"tf_config\":\"$file\"}"
+            else
+              tf_config="$tf_config, {\"tf_config\":\"$file\"}"
+            fi
+          done < file3.txt
+          tf_config="{\"include\":[$tf_config]}"
+          echo "## tf_config"
+          echo $tf_config
+          #echo "::set-output name=matrix::$tf_config" # Deprecated dont use anymore
+          echo "matrix=${tf_config}" >> $GITHUB_OUTPUT
+          echo "## GITHUB_OUTPUT"
+          echo $GITHUB_OUTPUT
+          cat $GITHUB_OUTPUT
+
+  preview:
+    name: Preview
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    needs: [generate_matrix]
+    strategy:
+      matrix: ${{fromJson(needs.generate_matrix.outputs.matrix)}}
+      ## https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#jobsjob_idstrategyfail-fast
+      ## Prevents the entire matrix to stop when one fails
+      ## If Github Actions stops a run mid-run, the TF state file sometime might not be written out before it fails or stops
+      fail-fast: false
+    runs-on: depot-ubuntu-22.04
+    environment: ${{ github.base_ref == 'main' && 'production' || github.base_ref }}
+    env:
+      tf_working_dir: ${{matrix.tf_config}}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::442042515479:role/prod-github-actions-role
+          role-session-name: pulumi-prod-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Check if Pulumi.yaml exists and get stack name
+        id: getStackName
+        run: |
+          if [ -f "${{ env.tf_working_dir }}/Pulumi.yaml" ]; then
+            STACK_NAME=$(yq '.name' '${{ env.tf_working_dir }}/Pulumi.yaml')
+            echo "Stack name: $STACK_NAME"
+            echo "result=$STACK_NAME" >> $GITHUB_OUTPUT
+            echo "has_pulumi_file=true" >> $GITHUB_OUTPUT
+          else
+            echo "No Pulumi.yaml found in ${{ env.tf_working_dir }}, skipping..."
+            echo "has_pulumi_file=false" >> $GITHUB_OUTPUT
+          fi
+      - name: Initialize Pulumi Stack if needed
+        id: initStack
+        if: steps.getStackName.outputs.has_pulumi_file == 'true'
+        run: |
+          cd ${{ env.tf_working_dir }}
+          export PULUMI_CONFIG_PASSPHRASE=""
+          pulumi login ${{ vars.PULUMI_CLOUD_URL_PROD }}
+
+          # Check if stack exists, create it if it doesn't
+          STACK_NAME="organization/${{ steps.getStackName.outputs.result }}/${{ env.DEPLOY_ENVIRONMENT }}"
+          echo "Checking if stack $STACK_NAME exists..."
+
+          NEW_STACK_CREATED=false
+          if ! pulumi stack select "$STACK_NAME" 2>/dev/null; then
+            echo "Stack doesn't exist, creating it..."
+            pulumi stack init "$STACK_NAME"
+            echo "Stack $STACK_NAME created successfully"
+            NEW_STACK_CREATED=true
+          else
+            echo "Stack $STACK_NAME already exists"
+          fi
+          
+          echo "new_stack_created=$NEW_STACK_CREATED" >> $GITHUB_OUTPUT
+        env:
+          PULUMI_CONFIG_PASSPHRASE: ""
+          AWS_REGION: ${{ env.AWS_REGION }}
+      - name: Pulumi Preview
+        if: steps.getStackName.outputs.has_pulumi_file == 'true'
+        uses: pulumi/actions@v6
+        with:
+          always-include-summary: true
+          cloud-url: ${{ vars.PULUMI_CLOUD_URL_PROD }}
+          command: preview
+          comment-on-pr: true
+          comment-on-summary: true
+          stack-name: organization/${{ steps.getStackName.outputs.result }}/${{ env.DEPLOY_ENVIRONMENT }}
+          work-dir: ${{ env.tf_working_dir }}
+          diff: true # expands the pulumi diff output on the changes
+          config-map: |
+            {
+              "some_var" : {"value": "${{ vars.PROD_API_ALB_CERT_ARN }}", "secret": true},
+              "some_secret": {"value": "${{ secrets.PROD_API_SENTRY_DSN }}", "secret": true},
+              "aws:region": {"value": "${{ env.PROD_AWS_REGION }}", "secret": false}
+            }
+
+      - name: Ensure Stack Exists Before Up
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.getStackName.outputs.has_pulumi_file == 'true'
+        run: |
+          cd ${{ env.tf_working_dir }}
+          export PULUMI_CONFIG_PASSPHRASE=""
+          pulumi login ${{ vars.PULUMI_CLOUD_URL_PROD }}
+
+          # Ensure stack exists before running up
+          STACK_NAME="organization/${{ steps.getStackName.outputs.result }}/${{ env.DEPLOY_ENVIRONMENT }}"
+          if ! pulumi stack select "$STACK_NAME" 2>/dev/null; then
+            echo "Stack doesn't exist, creating it..."
+            pulumi stack init "$STACK_NAME"
+            echo "Stack $STACK_NAME created successfully"
+          fi
+        env:
+          PULUMI_CONFIG_PASSPHRASE: ""
+          AWS_REGION: ${{ env.AWS_REGION }}
+      - name: Pulumi Up
+        uses: pulumi/actions@v6
+        id: pulumi
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.getStackName.outputs.has_pulumi_file == 'true'
+        with:
+          always-include-summary: true
+          cloud-url: ${{ vars.PULUMI_CLOUD_URL_PROD }}
+          command: up
+          comment-on-pr: true
+          comment-on-summary: true
+          stack-name: organization/${{ steps.getStackName.outputs.result }}/${{ env.DEPLOY_ENVIRONMENT }}
+          work-dir: ${{ env.tf_working_dir }}
+          diff: true # expands the pulumi diff output on the changes
+          config-map: |
+            {
+              "some_var" : {"value": "${{ vars.PROD_API_ALB_CERT_ARN }}", "secret": true},
+              "some_secret": {"value": "${{ secrets.PROD_API_SENTRY_DSN }}", "secret": true},
+              "aws:region": {"value": "${{ env.PROD_AWS_REGION }}", "secret": false}
+            }

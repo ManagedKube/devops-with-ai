@@ -1,0 +1,27 @@
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+env:
+  AWS_REGION: us-east-2
+jobs:
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    environment: copilot
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Staging - Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::061039784942:role/staging-github-readonly-role
+          role-session-name: pulumi-staging-readonly-${{ github.run_id }}
+          aws-region: us-east-2
+      - name: Staging - Verify AWS Credentials
+        run: |
+          aws sts get-caller-identity
+          echo "AWS credentials configured successfully"

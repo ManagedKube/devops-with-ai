@@ -1,0 +1,429 @@
+name: Pulumi - staging
+on:
+  push:
+    # only run when files in this path changes
+    paths:
+      - "pulumi/environments/aws/staging/**/*.yaml"
+      - "!pulumi/environments/aws/staging/**/sdk/**"
+    branches:
+      - main
+  pull_request:
+    # only run when files in this path changes
+    paths:
+      - "pulumi/environments/aws/staging/**/*.yaml"
+      - "!pulumi/environments/aws/staging/**/sdk/**"
+  issue_comment:
+    types: [created]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+  PULUMI_CONFIG_PASSPHRASE: "" # ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  DEPLOY_ENVIRONMENT: staging
+jobs:
+  ## ============================================================================
+  ## PR Comment Trigger Handler
+  ## ============================================================================
+  ## This job validates and processes PR comments for triggering Pulumi deployments.
+  ##
+  ## Purpose:
+  ##   - Enables manual deployment to staging via the "/pulumi up" comment on PRs
+  ##   - Validates that the commenter has appropriate permissions (write/admin)
+  ##   - Provides user feedback (reactions and comments)
+  ##
+  ## Process Flow:
+  ##   1. Triggered on any comment created on issues/PRs (issue_comment event)
+  ##   2. Validates the comment is the exact text "/pulumi up"
+  ##   3. Checks if the comment is on a pull request (not a regular issue)
+  ##   4. Verifies the commenter has write or admin permissions on the repository
+  ##   5. If all checks pass:
+  ##      - Sets triggered=true output for downstream jobs
+  ##      - Captures PR number and branch reference for checkout
+  ##      - Adds a 🚀 reaction to the comment
+  ##      - Posts an acknowledgment comment
+  ##   6. If permission check fails:
+  ##      - Posts an error message explaining the permission requirement
+  ##      - Sets triggered=false to prevent deployment
+  ##
+  ## Security:
+  ##   - Only repository collaborators with write or admin access can trigger deployments
+  ##   - Exact command match prevents accidental triggers
+  ##   - Permission validation happens before any code checkout or deployment actions
+  ## ============================================================================
+  check_comment:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    outputs:
+      triggered: ${{ steps.check.outputs.triggered }}
+      pr_number: ${{ steps.check.outputs.pr_number }}
+      pr_ref: ${{ steps.check.outputs.pr_ref }}
+    steps:
+      - name: Check if comment is command
+        id: check
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Parse the comment and check basic conditions
+            const comment = context.payload.comment.body.trim();
+            const isPR = context.payload.issue.pull_request !== undefined;
+
+            // Check if comment matches the exact command (case-sensitive)
+            const isCommand = comment === '/pulumi up';
+
+            // Verify the commenter has appropriate repository permissions
+            // Only collaborators with write or admin access can trigger deployments
+            const commenter = context.payload.comment.user.login;
+            const { data: permission } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: commenter
+            });
+
+            const hasPermission = ['admin', 'write'].includes(permission.permission);
+
+            // If all conditions are met, proceed with deployment trigger
+            if (isPR && isCommand && hasPermission) {
+              // Fetch PR details to get the branch reference for code checkout
+              const pr = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.issue.number
+              });
+              
+              // Set outputs for downstream jobs to use
+              core.setOutput('triggered', 'true');
+              core.setOutput('pr_number', context.payload.issue.number);
+              core.setOutput('pr_ref', pr.data.head.ref);
+              
+              // Provide visual feedback: add rocket reaction to the comment
+              await github.rest.reactions.createForIssueComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: context.payload.comment.id,
+                content: 'rocket'
+              });
+              
+              // Post acknowledgment comment so user knows the deployment is starting
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                body: '🚀 Pulumi up triggered for staging environment. Check the Actions tab for progress.'
+              });
+            } else {
+              // Handle the case where the user doesn't have permission
+              if (!hasPermission && isPR && isCommand) {
+                // Inform unauthorized users why their command was rejected
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.payload.issue.number,
+                  body: '❌ You do not have permission to trigger Pulumi deployments. Only repository collaborators with write or admin access can use this command.'
+                });
+              }
+              // Set triggered to false so downstream jobs won't run
+              core.setOutput('triggered', 'false');
+            }
+
+      - name: Set default outputs for non-comment events
+        if: github.event_name != 'issue_comment'
+        run: |
+          echo "triggered=false" >> $GITHUB_OUTPUT
+          echo "pr_number=" >> $GITHUB_OUTPUT
+          echo "pr_ref=" >> $GITHUB_OUTPUT
+
+  ## This generates a matrix of changed directory to run Terraform on
+  generate_matrix:
+    if: |
+      github.event_name == 'push' || 
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' && needs.check_comment.outputs.triggered == 'true')
+    needs:
+      - check_comment
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # The path that you want to construct the matrix on.  Only files in this
+      # path that has changed will be included in.
+      PATH_TO_CHECK: pulumi/environments/aws/staging
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout (for push/PR)
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Checkout PR branch (for comment)
+        # Security Note: This checks out untrusted PR code, but only when:
+        # 1. The exact command '/pulumi up' is used
+        # 2. The commenter has write or admin permission on the repository
+        # 3. The comment is on a pull request
+        # This is the intended behavior to deploy PR changes to staging for testing
+        if: github.event_name == 'issue_comment'
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ needs.check_comment.outputs.pr_number }}/head
+          fetch-depth: 0
+
+      - name: get parent directory and set matrix
+        id: set-matrix
+        run: |
+          # For issue_comment events, compare against main branch
+          if [ "${{ github.event_name }}" = "issue_comment" ]; then
+            git fetch origin main
+            git diff --name-only origin/main HEAD $PATH_TO_CHECK > files1.txt
+          else
+            # A list of files that changed
+            git diff --name-only HEAD^ HEAD $PATH_TO_CHECK > files1.txt
+          fi
+          # Output a list of parent folder stripping out the file name
+          # leaving only the parent dir name
+          while IFS= read -r file
+          do
+            parent_dir=$(dirname -- "$file")
+
+            echo "xx parent_dir: $parent_dir"
+            echo "xx file: $file"
+
+            if [[ "$parent_dir" != *sdk* ]] &&[[ "$parent_dir" != "pulumi/environments/aws/${{ env.DEPLOY_ENVIRONMENT }}/don_not_include_dir" ]] && [[ "$parent_dir" != "pulumi/environments/aws/${{ env.DEPLOY_ENVIRONMENT }}/don_not_include_dir" ]]; then
+              echo "aa: $parent_dir"
+              echo $parent_dir >> file2.txt
+            fi
+
+
+          done < files1.txt
+          echo "## All changed directories"
+          cat file2.txt
+          # There can be duplicates in the parent dir name if multiple
+          # files changed in that parent dir.  This is to output a list
+          # that is unqiue so that we don't run the plan on the same
+          # folder multiple times.
+          cat file2.txt | uniq > file3.txt
+          echo "## Unique list of changed dirs only"
+          cat file3.txt
+          echo "##"
+          # Set the parent dir into the Github Actions json matrix
+          # https://docs.github.com/en/actions/reference/context-and-expression-syntax-for-github-actions#fromjson
+          tf_config=''
+          while IFS= read -r file
+          do
+            echo "file = $file"
+            # parent_dir=$(dirname -- "$file")
+            # echo "parent_dir = $parent_dir"
+
+            if [[ -z $tf_config ]]; then
+              tf_config="{\"tf_config\":\"$file\"}"
+            else
+              tf_config="$tf_config, {\"tf_config\":\"$file\"}"
+            fi
+          done < file3.txt
+          tf_config="{\"include\":[$tf_config]}"
+          echo "## tf_config"
+          echo $tf_config
+          #echo "::set-output name=matrix::$tf_config" # Deprecated dont use anymore
+          echo "matrix=${tf_config}" >> $GITHUB_OUTPUT
+          echo "## GITHUB_OUTPUT"
+          echo $GITHUB_OUTPUT
+          cat $GITHUB_OUTPUT
+
+  preview:
+    name: Preview
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    needs: [check_comment, generate_matrix]
+    strategy:
+      matrix: ${{fromJson(needs.generate_matrix.outputs.matrix)}}
+      ## https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#jobsjob_idstrategyfail-fast
+      ## Prevents the entire matrix to stop when one fails
+      ## If Github Actions stops a run mid-run, the TF state file sometime might not be written out before it fails or stops
+      fail-fast: false
+    runs-on: depot-ubuntu-22.04
+    environment: ${{ github.base_ref == 'main' && 'production' || github.base_ref }}
+    env:
+      tf_working_dir: ${{matrix.tf_config}}
+    steps:
+      - name: Checkout (for push/PR)
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+
+      - name: Checkout PR branch (for comment)
+        if: github.event_name == 'issue_comment'
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ needs.check_comment.outputs.pr_number }}/head
+          fetch-depth: 0
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::061039784942:role/staging-github-actions-role
+          role-session-name: pulumi-staging-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Check if Pulumi.yaml exists and get stack name
+        id: getStackName
+        run: |
+          if [ -f "${{ env.tf_working_dir }}/Pulumi.yaml" ]; then
+            STACK_NAME=$(yq '.name' '${{ env.tf_working_dir }}/Pulumi.yaml')
+            echo "Stack name: $STACK_NAME"
+            echo "result=$STACK_NAME" >> $GITHUB_OUTPUT
+            echo "has_pulumi_file=true" >> $GITHUB_OUTPUT
+          else
+            echo "No Pulumi.yaml found in ${{ env.tf_working_dir }}, skipping..."
+            echo "has_pulumi_file=false" >> $GITHUB_OUTPUT
+          fi
+      - name: Initialize Pulumi Stack if needed
+        id: initStack
+        if: steps.getStackName.outputs.has_pulumi_file == 'true'
+        run: |
+          cd ${{ env.tf_working_dir }}
+          export PULUMI_CONFIG_PASSPHRASE=""
+          pulumi login ${{ vars.PULUMI_CLOUD_URL_STAGING }}
+
+          # Check if stack exists, create it if it doesn't
+          STACK_NAME="organization/${{ steps.getStackName.outputs.result }}/${{ env.DEPLOY_ENVIRONMENT }}"
+          echo "Checking if stack $STACK_NAME exists..."
+
+          NEW_STACK_CREATED=false
+          if ! pulumi stack select "$STACK_NAME" 2>/dev/null; then
+            echo "Stack doesn't exist, creating it..."
+            pulumi stack init "$STACK_NAME"
+            echo "Stack $STACK_NAME created successfully"
+            NEW_STACK_CREATED=true
+          else
+            echo "Stack $STACK_NAME already exists"
+          fi
+
+          echo "new_stack_created=$NEW_STACK_CREATED" >> $GITHUB_OUTPUT
+        env:
+          PULUMI_CONFIG_PASSPHRASE: ""
+          AWS_REGION: ${{ env.AWS_REGION }}
+      - name: Setup local Pulumi component deps (venv) if using local packages
+        if: steps.getStackName.outputs.has_pulumi_file == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${{ env.tf_working_dir }}"
+
+          if [ ! -f "Pulumi.yaml" ]; then
+            echo "No Pulumi.yaml found; skipping local component setup."
+            exit 0
+          fi
+
+          # Collect package values from Pulumi.yaml
+          # Expect entries like: packages: { comp: ../../path/to/component@0.0.0 }
+          mapfile -t PKG_VALUES < <(yq -r '.packages // {} | to_entries[] | .value' Pulumi.yaml || true)
+
+          REL_PATHS=()
+          for v in "${PKG_VALUES[@]:-}"; do
+            # Strip quotes and version suffix after '@'
+            v="${v%\"}"; v="${v#\"}"
+            base="${v%%@*}"
+            if [[ "$base" =~ ^\./|^\.\./ ]]; then
+              REL_PATHS+=("$base")
+            fi
+          done
+
+          if [ "${#REL_PATHS[@]}" -eq 0 ]; then
+            echo "No local component packages detected; skipping."
+            exit 0
+          fi
+
+          echo "Local component paths detected:"
+          printf ' - %s\n' "${REL_PATHS[@]}"
+
+          for rel in "${REL_PATHS[@]}"; do
+            echo "Setting up venv for component at: $rel"
+            # Enter the component folder relative to current Pulumi.yaml dir
+            pushd "$rel" >/dev/null
+
+            # Create venv and install deps
+            python3 -m venv venv
+            source venv/bin/activate
+            python -m pip install -U pip
+
+            if [ -f requirements.txt ]; then
+              pip install -r requirements.txt
+            else
+              # Fallback to core deps for Pulumi Python component providers
+              pip install pulumi pulumi-aws
+            fi
+
+            deactivate || true
+            popd >/dev/null
+          done
+          echo "Back in: $(pwd)"
+      - name: Pulumi Preview
+        if: steps.getStackName.outputs.has_pulumi_file == 'true'
+        uses: pulumi/actions@v6
+        with:
+          always-include-summary: true
+          cloud-url: ${{ vars.PULUMI_CLOUD_URL_STAGING }}
+          command: preview
+          comment-on-pr: true
+          comment-on-summary: true
+          stack-name: organization/${{ steps.getStackName.outputs.result }}/${{ env.DEPLOY_ENVIRONMENT }}
+          work-dir: ${{ env.tf_working_dir }}
+          diff: true # expands the pulumi diff output on the changes
+          config-map: |
+            {
+              "some_var" : {"value": "${{ vars.PROD_API_ALB_CERT_ARN }}", "secret": true},
+              "some_secret": {"value": "${{ secrets.PROD_API_SENTRY_DSN }}", "secret": true},
+              "aws:region": {"value": "${{ env.PROD_AWS_REGION }}", "secret": false}
+            }
+
+      - name: Ensure Stack Exists Before Up
+        # This condition is repeated across multiple steps to enable pulumi up via:
+        # 1. Push to main (existing behavior), OR
+        # 2. PR comment trigger (new feature)
+        if: |
+          steps.getStackName.outputs.has_pulumi_file == 'true' && (
+            (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
+            (github.event_name == 'issue_comment' && needs.check_comment.outputs.triggered == 'true')
+          )
+        run: |
+          cd ${{ env.tf_working_dir }}
+          export PULUMI_CONFIG_PASSPHRASE=""
+          pulumi login ${{ vars.PULUMI_CLOUD_URL_STAGING }}
+
+          # Ensure stack exists before running up
+          STACK_NAME="organization/${{ steps.getStackName.outputs.result }}/${{ env.DEPLOY_ENVIRONMENT }}"
+          if ! pulumi stack select "$STACK_NAME" 2>/dev/null; then
+            echo "Stack doesn't exist, creating it..."
+            pulumi stack init "$STACK_NAME"
+            echo "Stack $STACK_NAME created successfully"
+          fi
+        env:
+          PULUMI_CONFIG_PASSPHRASE: ""
+          AWS_REGION: ${{ env.AWS_REGION }}
+      - name: Pulumi Up
+        uses: pulumi/actions@v6
+        id: pulumi
+        if: |
+          steps.getStackName.outputs.has_pulumi_file == 'true' && (
+            (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
+            (github.event_name == 'issue_comment' && needs.check_comment.outputs.triggered == 'true')
+          )
+        with:
+          always-include-summary: true
+          cloud-url: ${{ vars.PULUMI_CLOUD_URL_STAGING }}
+          command: up
+          comment-on-pr: true
+          comment-on-summary: true
+          stack-name: organization/${{ steps.getStackName.outputs.result }}/${{ env.DEPLOY_ENVIRONMENT }}
+          work-dir: ${{ env.tf_working_dir }}
+          diff: true # expands the pulumi diff output on the changes
+          config-map: |
+            {
+              "some_var" : {"value": "${{ vars.PROD_API_ALB_CERT_ARN }}", "secret": true},
+              "some_secret": {"value": "${{ secrets.PROD_API_SENTRY_DSN }}", "secret": true},
+              "aws:region": {"value": "${{ env.PROD_AWS_REGION }}", "secret": false}
+            }
