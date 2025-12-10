@@ -27,6 +27,20 @@ This gives us a very good process to work out a new thing or a change in a PR,
 and fully testing it before merging and creating a release of it that can be
 duplicated to higher environments.
 
+## How to use this repository
+Even with AI, we still believe in IaC (infrastructure as code).  This repository
+holds the code that is creating your infrastructure.  All changes (CRUD) should
+go through the standard code change process (new branch, change/update/etc, PR,
+run tests, merge/apply).
+
+The general process after this repository is setup and connected to your cloud,
+would be to open a Github Issue with what you want and then assign it to the
+Github Copilot Agent.  You will need at least the Github Copilot Plus subscription
+level for everything to work properly.  The Agent will then work on your issue
+and create a PR for it.  You should look at the PR to make sure it is mostly
+correct and then run the tests in the PR.  After merging the PR, the changes
+will apply in your cloud.
+
 ## Example Issue that the Github Copilot Agent completed
 
 ### Creating a VPC component
@@ -37,3 +51,25 @@ a VPC and if you follow it through to the PR, it will show you how
 I interacted with it to make a few change and to debug an issue which
 ultimately was not an issue but a cloud/IaC issue, that the agent pointed
 out and told me how to fix it.
+
+## How to setup this repository
+
+### What Github Copilot subscription do you need?
+Github Copilot Plus
+
+### What files to copy to your new repository?
+??
+
+### How to setup the Pulumi backend state store?
+???
+
+### How to give permission to Github Actions to enact changes to your cloud?
+There are a few options:
+
+1. You can run the Github OIDC locally
+
+2. You can create static AWS Keys and give it to Github Actions to use temporarily
+   while it creates the Github OIDC and then switch over to that
+
+## What makes a well defined Github Issue for the agent
+???
