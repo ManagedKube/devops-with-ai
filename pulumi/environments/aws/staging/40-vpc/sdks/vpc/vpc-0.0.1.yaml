@@ -1,3 +1,4 @@
 packageDeclarationVersion: 1
 name: vpc
 version: 0.0.1
+downloadUrl: git://github.com/ManagedKube/devops-with-ai.git/pulumi/components/aws/vpc
