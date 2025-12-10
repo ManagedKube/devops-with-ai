@@ -2,7 +2,7 @@ name: vpc
 description: VPC infrastructure for staging environment
 runtime: yaml
 packages:
-  vpc: https://github.com/ManagedKube/devops-with-ai.git/pulumi/components/aws/vpc@0.0.1
+  vpc: https://github.com/ManagedKube/devops-with-ai.git/pulumi/components/aws/vpc@0.0.2
 resources:
   aws-provider:
     # Version can be found here: https://github.com/pulumi/pulumi-aws
