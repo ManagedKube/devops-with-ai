@@ -1,0 +1,92 @@
+name: Check Staging Pulumi References
+
+# This workflow validates that staging Pulumi configurations don't use local component references
+# Local references (relative paths with @0.0.0) should only be used during development, not in staging
+
+on:
+  pull_request:
+    paths:
+      - 'pulumi/environments/aws/**/*.yaml'
+
+jobs:
+  check-references:
+    name: Validate Pulumi Component References
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      
+      - name: Check for local path references in Pulumi.yaml files
+        id: check-local-paths
+        run: |
+          echo "Checking for local path references in Pulumi.yaml files..."
+          EXIT_CODE=0
+          
+          # Find all Pulumi.yaml files under pulumi/environments/aws/
+          while IFS= read -r file; do
+            echo "Checking file: $file"
+            
+            # Check if the file contains packages with relative paths (starting with ../ or ./)
+            if grep -E '^\s+\w+:\s+\.\.' "$file"; then
+              echo "❌ ERROR: Found local path reference in $file"
+              echo "Local path references (e.g., ../../../../components/aws/vpc@0.0.0) are not allowed in staging."
+              echo "Please use git URL references instead (e.g., https://github.com/ManagedKube/devops-with-ai.git/pulumi/components/aws/vpc@x.x.x)"
+              echo ""
+              EXIT_CODE=1
+            fi
+          done < <(find pulumi/environments/aws -type f -name "Pulumi.yaml")
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "✅ No local path references found in Pulumi.yaml files"
+          fi
+          
+          exit $EXIT_CODE
+      
+      - name: Check for 0.0.0 version in SDK files
+        id: check-sdk-versions
+        if: always()
+        run: |
+          echo "Checking for 0.0.0 version references in SDK files..."
+          EXIT_CODE=0
+          
+          # Check for SDK files matching *-0.0.0.yaml pattern in staging
+          while IFS= read -r file; do
+            if [[ -n "$file" ]]; then
+              echo "❌ ERROR: Found SDK file with 0.0.0 version in filename: $file"
+              echo "Files matching pattern *-0.0.0.yaml are not allowed in staging."
+              echo "Please update to a proper semantic version (e.g., component-0.0.1.yaml)"
+              echo ""
+              EXIT_CODE=1
+            fi
+          done < <(find pulumi/environments/aws/staging -type f -path "*/sdks/*" -name "*-0.0.0.yaml" 2>/dev/null || true)
+          
+          # Check for version: 0.0.0 inside any SDK YAML files in staging
+          while IFS= read -r file; do
+            if grep -q "version: 0.0.0" "$file"; then
+              echo "❌ ERROR: Found version: 0.0.0 in SDK file: $file"
+              echo "Version 0.0.0 is not allowed in staging SDK files."
+              echo "Please update to a proper semantic version (e.g., version: 0.0.1)"
+              echo ""
+              EXIT_CODE=1
+            fi
+          done < <(find pulumi/environments/aws/staging -type f -path "*/sdks/*" -name "*.yaml" 2>/dev/null || true)
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "✅ No 0.0.0 version references found in SDK files"
+          fi
+          
+          exit $EXIT_CODE
+      
+      - name: Summary
+        if: always()
+        run: |
+          if [ "${{ steps.check-local-paths.outcome }}" = "failure" ] || [ "${{ steps.check-sdk-versions.outcome }}" = "failure" ]; then
+            echo "❌ Validation failed. Please fix the issues above."
+            exit 1
+          else
+            echo "✅ All checks passed!"
+          fi
