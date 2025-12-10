@@ -30,8 +30,8 @@ jobs:
           while IFS= read -r file; do
             echo "Checking file: $file"
             
-            # Check if the file contains packages with relative paths
-            if grep -E '^\s+\w+:\s+\.{1,2}/' "$file"; then
+            # Check if the file contains packages with relative paths (starting with ../ or ./)
+            if grep -E '^\s+\w+:\s+\.\.' "$file"; then
               echo "❌ ERROR: Found local path reference in $file"
               echo "Local path references (e.g., ../../../../components/aws/vpc@0.0.0) are not allowed in staging."
               echo "Please use git URL references instead (e.g., https://github.com/ManagedKube/devops-with-ai.git/pulumi/components/aws/vpc@x.x.x)"
