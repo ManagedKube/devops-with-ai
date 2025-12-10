@@ -1,6 +1,7 @@
 name: vpc
 description: VPC infrastructure for staging environment
 runtime: yaml
+# Testing PR validation workflow for local path references
 packages:
   vpc: ../../../../components/aws/vpc@0.0.0
 resources:
