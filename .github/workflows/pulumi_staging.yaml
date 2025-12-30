@@ -368,7 +368,7 @@ jobs:
         with:
           always-include-summary: true
           cloud-url: ${{ env.PULUMI_CLOUD_URL_STAGING }}
-          command: preview
+          command: destroy #preview
           comment-on-pr: true
           comment-on-summary: true
           stack-name: organization/${{ steps.getStackName.outputs.result }}/${{ env.DEPLOY_ENVIRONMENT }}
