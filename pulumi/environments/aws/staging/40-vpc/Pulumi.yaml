@@ -42,3 +42,4 @@ outputs:
   internet_gateway_id: ${staging-vpc.internetGatewayId}
   nat_gateway_ids: ${staging-vpc.natGatewayIds}
   default_security_group_id: ${staging-vpc.defaultSecurityGroupId}
+
